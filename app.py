@@ -1,6 +1,6 @@
 """
 ========================================================================
- Hanzi Explorer 2.0 — character-decomposition learning app
+ Hanzi Explorer 3.0 — character-decomposition learning app
  Single-file Streamlit app. Deploy free on Streamlit Cloud / HF Spaces.
  requirements.txt:  streamlit
                     hanzipy
@@ -14,43 +14,33 @@ from hanzipy.decomposer import HanziDecomposer
 # ----------------------------------------------------------------------
 # PINYIN TONE-MARK CONVERSION  ("jian4" -> "jiàn")
 # ----------------------------------------------------------------------
-TONE_MARKS = {
-    'a':'āáǎàa','e':'ēéěèe','i':'īíǐìi',
-    'o':'ōóǒòo','u':'ūúǔùu','v':'ǖǘǚǜü',
-}
+TONE_MARKS = {'a':'āáǎàa','e':'ēéěèe','i':'īíǐìi','o':'ōóǒòo','u':'ūúǔùu','v':'ǖǘǚǜü'}
 def _mark_syllable(syl):
     syl = syl.strip()
-    if not syl:
-        return syl
+    if not syl: return syl
     tone = 5
-    if syl[-1].isdigit():
-        tone = int(syl[-1]); syl = syl[:-1]
-    if tone in (5, 0):
-        return syl.replace('v','ü').replace('V','Ü')
+    if syl[-1].isdigit(): tone = int(syl[-1]); syl = syl[:-1]
+    if tone in (5,0): return syl.replace('v','ü').replace('V','Ü')
     low = syl.lower(); idx = -1
     if 'a' in low: idx = low.index('a')
     elif 'e' in low: idx = low.index('e')
     elif 'ou' in low: idx = low.index('o')
     else:
         for i in range(len(low)-1,-1,-1):
-            if low[i] in 'aeiouv': idx = i; break
-    if idx == -1:
-        return syl.replace('v','ü')
+            if low[i] in 'aeiouv': idx=i; break
+    if idx == -1: return syl.replace('v','ü')
     marked = TONE_MARKS[low[idx]][tone-1]
     if syl[idx].isupper(): marked = marked.upper()
     return (syl[:idx]+marked+syl[idx+1:]).replace('v','ü').replace('V','Ü')
-
 def prettify_pinyin(raw):
     if not raw: return raw
     return ' '.join(_mark_syllable(s) for s in raw.split(' '))
-
 def normalize_pinyin_query(q):
-    q = q.strip().lower()
-    q = re.sub(r'[0-5]','',q)
+    q = q.strip().lower(); q = re.sub(r'[0-5]','',q)
     trans = {}
-    for base, marks in TONE_MARKS.items():
-        for m in marks: trans[m] = base
-    q = ''.join(trans.get(ch, ch) for ch in q)
+    for base,marks in TONE_MARKS.items():
+        for m in marks: trans[m]=base
+    q = ''.join(trans.get(ch,ch) for ch in q)
     return q.replace('ü','v').replace(' ','')
 
 # ----------------------------------------------------------------------
@@ -135,8 +125,7 @@ def _build_radical_lookup():
     for num,(glyph,py,mean,variants) in KANGXI.items():
         rec = {"radical_number":num,"canonical":glyph,"pinyin":py,"meaning":mean}
         lookup[glyph] = rec
-        for v in variants:
-            lookup[v] = {**rec,"variant_form":v}
+        for v in variants: lookup[v] = {**rec,"variant_form":v}
     return lookup
 RADICAL_LOOKUP = _build_radical_lookup()
 
@@ -155,21 +144,17 @@ class ChineseCharacterEngine:
         return 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF
 
     def _lookup(self, item):
-        try:
-            entries = self._dict.definition_lookup(item)
-        except Exception:
-            return []
+        try: entries = self._dict.definition_lookup(item)
+        except Exception: return []
         return [{"pinyin":e.get("pinyin",""),"meaning":e.get("definition","")} for e in entries]
 
     def _component_info(self, comp):
-        if comp in self._comp_cache:
-            return self._comp_cache[comp]
+        if comp in self._comp_cache: return self._comp_cache[comp]
         rad = self._radicals.get(comp)
         if rad:
             info = {"component":comp,"meaning":rad["meaning"],"pinyin":rad["pinyin"],
                     "radical_number":rad["radical_number"],"source":"kangxi"}
-            if "variant_form" in rad:
-                info["note"] = f"variant of {rad['canonical']}"
+            if "variant_form" in rad: info["note"] = f"variant of {rad['canonical']}"
         else:
             defs = self._lookup(comp)
             info = ({"component":comp,"meaning":defs[0]["meaning"].split("/")[0],
@@ -179,22 +164,17 @@ class ChineseCharacterEngine:
         return info
 
     def _components(self, ch):
-        try:
-            decomp = self._decomposer.decompose(ch)
-        except Exception:
-            return []
+        try: decomp = self._decomposer.decompose(ch)
+        except Exception: return []
         seen, out = set(), []
         for c in decomp.get("radical", []) or []:
-            if c == ch or c in seen or not c.strip():
-                continue
+            if c == ch or c in seen or not c.strip(): continue
             seen.add(c); out.append(self._component_info(c))
         return out
 
     def _examples(self, ch, limit=6):
-        try:
-            ex = self._dict.get_examples(ch)
-        except Exception:
-            return []
+        try: ex = self._dict.get_examples(ch)
+        except Exception: return []
         words = []
         for tier in ("high_frequency","mid_frequency","low_frequency"):
             for w in ex.get(tier, []):
@@ -210,10 +190,8 @@ class ChineseCharacterEngine:
 
     def explain_phrase(self, phrase):
         self._comp_cache = {}
-        try:
-            words = self._dict.segment(phrase)
-        except Exception:
-            words = list(phrase)
+        try: words = self._dict.segment(phrase)
+        except Exception: words = list(phrase)
         word_objs = []
         for w in words:
             if not any(self._is_chinese(c) for c in w): continue
@@ -222,18 +200,17 @@ class ChineseCharacterEngine:
         return {"input":phrase,"language":"zh","words":word_objs}
 
     def build_pinyin_index(self):
-        index = {}
+        index, valid = {}, set()
         for char, entries in self._dict.dictionary_simplified.items():
-            if len(char) != 1: continue
+            if len(char)!=1: continue
             for e in entries:
                 raw = e.get("pinyin","")
                 for syl in raw.split(' '):
                     key = normalize_pinyin_query(syl)
                     if not key: continue
-                    try:
-                        rank = int(self._dict.get_character_frequency(char).get("number",99999))
-                    except Exception:
-                        rank = 99999
+                    valid.add(key)
+                    try: rank = int(self._dict.get_character_frequency(char).get("number",99999))
+                    except Exception: rank = 99999
                     index.setdefault(key,[]).append(
                         {"char":char,"pinyin_raw":raw,"meaning":e.get("definition",""),"rank":rank})
         for key,lst in index.items():
@@ -242,97 +219,132 @@ class ChineseCharacterEngine:
                 if item["char"] in seen: continue
                 seen.add(item["char"]); uniq.append(item)
             index[key] = uniq
-        return index
+        return index, valid
+
+# multi-syllable pinyin segmentation
+def segment_pinyin(text, valid):
+    text = normalize_pinyin_query(text)
+    result, i = [], 0
+    while i < len(text):
+        matched = False
+        for L in range(6,0,-1):
+            chunk = text[i:i+L]
+            if chunk in valid:
+                result.append(chunk); i += L; matched = True; break
+        if not matched:
+            result.append(text[i]); i += 1
+    return result
 
 # ----------------------------------------------------------------------
-# STREAMLIT UI  (modern dark theme)
+# STREAMLIT UI
 # ----------------------------------------------------------------------
 st.set_page_config(page_title="Hanzi Explorer", page_icon="🀄", layout="centered")
 
 @st.cache_resource
 def get_engine():
     eng = ChineseCharacterEngine(RADICAL_LOOKUP)
-    return eng, eng.build_pinyin_index()
+    idx, valid = eng.build_pinyin_index()
+    return eng, idx, valid
 
-engine, PINYIN_INDEX = get_engine()
+engine, PINYIN_INDEX, VALID_SYL = get_engine()
 
-# ---- custom CSS for a modern look ----
-st.markdown("""
+# ---- theme toggle (light default) ----
+if "dark" not in st.session_state:
+    st.session_state["dark"] = False
+
+top = st.columns([6,2])
+with top[1]:
+    st.session_state["dark"] = st.toggle("🌙 Dark mode", value=st.session_state["dark"])
+
+DARK = st.session_state["dark"]
+
+if DARK:
+    THEME = dict(
+        bg="radial-gradient(1200px 600px at 20% -10%, #1e2a4a 0%, #0b1020 45%, #070a16 100%)",
+        text="#e7ecf5", sub="#9fb0cc", card="rgba(255,255,255,0.04)",
+        border="rgba(255,255,255,0.08)", hz="#ffffff", accent="#7cc4ff",
+        chipbg="rgba(124,196,255,0.12)", chipbd="rgba(124,196,255,0.30)", chiptx="#dbe7ff",
+        varbg="rgba(255,158,203,0.12)", varbd="rgba(255,158,203,0.35)",
+        exbg="rgba(255,255,255,0.03)", label="#7f90b0", meaning="#cdd7ea", inputbg="rgba(255,255,255,0.06)")
+else:
+    THEME = dict(
+        bg="radial-gradient(1200px 600px at 20% -10%, #eaf1ff 0%, #f7f9fc 45%, #ffffff 100%)",
+        text="#1a2338", sub="#5c6b86", card="rgba(255,255,255,0.85)",
+        border="rgba(20,40,80,0.10)", hz="#141c30", accent="#2b6fff",
+        chipbg="rgba(43,111,255,0.08)", chipbd="rgba(43,111,255,0.25)", chiptx="#243b6b",
+        varbg="rgba(214,51,132,0.08)", varbd="rgba(214,51,132,0.28)",
+        exbg="rgba(20,40,80,0.03)", label="#7484a3", meaning="#33415c", inputbg="rgba(255,255,255,0.9)")
+
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Serif+SC:wght@700&display=swap');
-.stApp {
-  background: radial-gradient(1200px 600px at 20% -10%, #1e2a4a 0%, #0b1020 45%, #070a16 100%);
-  color: #e7ecf5; font-family: 'Inter', sans-serif;
-}
-.big-title {
-  font-size: 2.6rem; font-weight: 800; letter-spacing:-1px;
-  background: linear-gradient(90deg,#7cc4ff,#b99cff 60%,#ff9ecb);
-  -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:0;
-}
-.subtitle { color:#9fb0cc; margin-top:0; font-size:1rem; }
-.card {
-  background: rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-  border-radius:18px; padding:20px 22px; margin:14px 0;
-  backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,0.35);
-}
-.hz {
-  font-family:'Noto Serif SC',serif; font-size:3.4rem; line-height:1;
-  color:#fff; text-shadow:0 2px 20px rgba(124,196,255,0.4);
-}
-.pinyin { font-size:1.4rem; color:#7cc4ff; font-weight:600; }
-.meaning { color:#cdd7ea; font-size:1.02rem; }
-.chip {
-  display:inline-block; padding:6px 12px; margin:4px 6px 4px 0; border-radius:999px;
-  background:rgba(124,196,255,0.12); border:1px solid rgba(124,196,255,0.3);
-  font-size:0.92rem; color:#dbe7ff;
-}
-.chip .cpy { color:#8fa6c9; font-size:0.82rem; }
-.chip.var { background:rgba(255,158,203,0.12); border-color:rgba(255,158,203,0.35); }
-.label { text-transform:uppercase; letter-spacing:1.5px; font-size:0.72rem;
-         color:#7f90b0; margin:14px 0 6px; font-weight:600; }
-.ex { display:flex; justify-content:space-between; padding:8px 12px; margin:5px 0;
-      background:rgba(255,255,255,0.03); border-radius:10px; border-left:3px solid #7cc4ff; }
-.ex b { color:#fff; font-size:1.1rem; } .ex .epy{ color:#7cc4ff; }
-.ex .em { color:#9fb0cc; font-size:0.9rem; max-width:60%; text-align:right; }
-.stTextInput input, .stTextArea textarea {
-  background:rgba(255,255,255,0.06)!important; color:#fff!important;
-  border:1px solid rgba(255,255,255,0.15)!important; border-radius:12px!important; }
-div[data-baseweb="tab-list"]{ gap:8px; }
-button[data-baseweb="tab"]{ background:rgba(255,255,255,0.05); border-radius:10px 10px 0 0; }
+.stApp {{ background:{THEME['bg']}; color:{THEME['text']}; font-family:'Inter',sans-serif; }}
+.big-title {{ font-size:2.6rem; font-weight:800; letter-spacing:-1px;
+  background:linear-gradient(90deg,#2b6fff,#7c4dff 55%,#ff5fa2);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:0; }}
+.subtitle {{ color:{THEME['sub']}; margin-top:2px; font-size:1rem; }}
+.card {{ background:{THEME['card']}; border:1px solid {THEME['border']}; border-radius:18px;
+  padding:20px 22px; margin:14px 0; backdrop-filter:blur(10px);
+  box-shadow:0 8px 30px rgba(20,40,80,0.10); }}
+.hz {{ font-family:'Noto Serif SC',serif; font-size:3.4rem; line-height:1; color:{THEME['hz']}; }}
+.pinyin {{ font-size:1.4rem; color:{THEME['accent']}; font-weight:600; }}
+.meaning {{ color:{THEME['meaning']}; font-size:1.02rem; }}
+.chip {{ display:inline-block; padding:6px 12px; margin:4px 6px 4px 0; border-radius:999px;
+  background:{THEME['chipbg']}; border:1px solid {THEME['chipbd']}; font-size:0.92rem; color:{THEME['chiptx']}; }}
+.chip .cpy {{ opacity:0.7; font-size:0.82rem; }}
+.chip.var {{ background:{THEME['varbg']}; border-color:{THEME['varbd']}; }}
+.label {{ text-transform:uppercase; letter-spacing:1.5px; font-size:0.72rem; color:{THEME['label']};
+  margin:14px 0 6px; font-weight:700; }}
+.stTextInput input {{ background:{THEME['inputbg']}!important; color:{THEME['text']}!important;
+  border:1px solid {THEME['border']}!important; border-radius:12px!important; }}
+div[data-baseweb="tab-list"]{{ gap:8px; }}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="big-title">🀄 Hanzi Explorer</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Break any Chinese word into its building blocks — or type pinyin to find the character you need.</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Break any Chinese word into its building blocks — or type pinyin to find characters.</p>', unsafe_allow_html=True)
 
-def render_character(c):
+# ---- render a character card; example words become clickable drill-down buttons ----
+def render_character(c, key_prefix):
     rd = c["readings"][0] if c["readings"] else {"pinyin":"","meaning":"?"}
-    py = prettify_pinyin(rd["pinyin"])
     html = f'<div class="card"><span class="hz">{c["character"]}</span> '
-    html += f'<span class="pinyin">{py}</span><br>'
+    html += f'<span class="pinyin">{prettify_pinyin(rd["pinyin"])}</span><br>'
     html += f'<span class="meaning">{rd["meaning"]}</span>'
     if c["components"]:
         html += '<div class="label">Building blocks</div>'
         for comp in c["components"]:
             cls = "chip var" if comp.get("note") else "chip"
             note = f" · {comp['note']}" if comp.get("note") else ""
-            cpy = prettify_pinyin(comp["pinyin"])
             html += (f'<span class="{cls}">{comp["component"]} '
-                     f'<span class="cpy">{cpy}</span> — {comp["meaning"]}{note}</span>')
-    if c["appears_in"]:
-        html += '<div class="label">Also appears in</div>'
-        for ex in c["appears_in"]:
-            html += (f'<div class="ex"><span><b>{ex["word"]}</b> '
-                     f'<span class="epy">{prettify_pinyin(ex["pinyin"])}</span></span>'
-                     f'<span class="em">{ex["meaning"][:70]}</span></div>')
+                     f'<span class="cpy">{prettify_pinyin(comp["pinyin"])}</span> — {comp["meaning"]}{note}</span>')
     html += '</div>'
     st.markdown(html, unsafe_allow_html=True)
+    # clickable example words -> drill into that word
+    if c["appears_in"]:
+        st.markdown('<div class="label">Also appears in — click to break it down</div>', unsafe_allow_html=True)
+        cols = st.columns(3)
+        for i, ex in enumerate(c["appears_in"]):
+            lbl = f'{ex["word"]}  {prettify_pinyin(ex["pinyin"])}'
+            if cols[i % 3].button(lbl, key=f"{key_prefix}_ex_{i}", use_container_width=True):
+                st.session_state["drill_word"] = ex["word"]
 
-tab1, tab2 = st.tabs(["✍️ Explore text", "🔤 Pinyin → character"])
+def render_word_breakdown(word, key_prefix):
+    """Explain a full word and each of its characters."""
+    obj = engine.explain_phrase(word)
+    for w in obj["words"]:
+        wr = w["readings"][0] if w["readings"] else None
+        title = f'### {w["word"]}'
+        if wr: title += f'  ·  {prettify_pinyin(wr["pinyin"])}'
+        st.markdown(title)
+        if wr: st.markdown(f'<span class="meaning">{wr["meaning"]}</span>', unsafe_allow_html=True)
+        for j, c in enumerate(w["characters"]):
+            render_character(c, key_prefix=f"{key_prefix}_{w['word']}_{j}")
+
+tab1, tab2 = st.tabs(["✍️ Explore text", "🔤 Pinyin → characters"])
 
 with tab1:
-    phrase = st.text_input("Enter Chinese text", value="电影院",
-                           placeholder="e.g. 电影院, 医院, 我想去中国", key="phrase_in")
+    phrase = st.text_input("Enter Chinese text", value="洗手间",
+                           placeholder="e.g. 洗手间, 电影院, 我想去中国", key="phrase_in")
     if phrase.strip():
         result = engine.explain_phrase(phrase)
         if not result["words"]:
@@ -343,27 +355,47 @@ with tab1:
             if wr: title += f'  ·  {prettify_pinyin(wr["pinyin"])}'
             st.markdown(title)
             if wr: st.markdown(f'<span class="meaning">{wr["meaning"]}</span>', unsafe_allow_html=True)
-            for c in w["characters"]:
-                render_character(c)
+            for j, c in enumerate(w["characters"]):
+                render_character(c, key_prefix=f"t1_{w['word']}_{j}")
 
 with tab2:
-    q = st.text_input("Type pinyin (with or without tone number)", value="jian",
-                      placeholder="e.g. jian, hao3, shui", key="pinyin_in")
+    q = st.text_input("Type pinyin — one or many syllables together",
+                      value="xishoujian",
+                      placeholder="e.g. xishoujian, zhongguo, hao, jian4", key="pinyin_in")
     if q.strip():
-        hits = PINYIN_INDEX.get(normalize_pinyin_query(q), [])
-        if not hits:
-            st.warning("No characters found for that pinyin. Try another syllable.")
-        else:
-            st.markdown(f'<div class="label">{len(hits)} match(es) — most common first. Click one to explore.</div>',
-                        unsafe_allow_html=True)
-            cols = st.columns(5)
-            for i, h in enumerate(hits[:20]):
-                label = f'{h["char"]}\n{prettify_pinyin(h["pinyin_raw"])}'
-                if cols[i % 5].button(label, key=f"pick_{i}", use_container_width=True):
-                    st.session_state["chosen_char"] = h["char"]
-            chosen = st.session_state.get("chosen_char")
-            if chosen:
-                st.markdown(f'<div class="label">Selected character</div>', unsafe_allow_html=True)
-                render_character(engine.explain_character(chosen))
+        syllables = segment_pinyin(q, VALID_SYL)
+        st.markdown(f'<div class="label">Detected syllables: {" · ".join(syllables)}</div>',
+                    unsafe_allow_html=True)
+        # For each syllable, let user pick which character they meant
+        picked = st.session_state.setdefault("picked_chars", {})
+        for si, syl in enumerate(syllables):
+            hits = PINYIN_INDEX.get(syl, [])
+            if not hits:
+                st.warning(f"No characters for '{syl}'."); continue
+            st.markdown(f'**{syl}** — pick a character:')
+            cols = st.columns(6)
+            for i, h in enumerate(hits[:12]):
+                lbl = f'{h["char"]}\n{prettify_pinyin(h["pinyin_raw"])}'
+                if cols[i % 6].button(lbl, key=f"pk_{si}_{i}", use_container_width=True):
+                    picked[si] = h["char"]
+            # default to most common if none picked yet
+            picked.setdefault(si, hits[0]["char"])
+            st.markdown(f'<span class="pinyin">→ {picked[si]}</span>', unsafe_allow_html=True)
+
+        chosen_word = "".join(picked.get(i, "") for i in range(len(syllables)))
+        if chosen_word:
+            st.divider()
+            st.markdown(f'<div class="label">Breakdown of: {chosen_word}</div>', unsafe_allow_html=True)
+            for j, ch in enumerate(chosen_word):
+                render_character(engine.explain_character(ch), key_prefix=f"t2_{j}")
+
+# ---- drill-down panel (triggered by clicking an example word anywhere) ----
+if st.session_state.get("drill_word"):
+    dw = st.session_state["drill_word"]
+    st.divider()
+    st.markdown(f'<div class="label">🔎 Drilled into: {dw}</div>', unsafe_allow_html=True)
+    render_word_breakdown(dw, key_prefix="drill")
+    if st.button("✖ Close drill-down"):
+        st.session_state["drill_word"] = None
 
 st.caption("Data: CC-CEDICT + cjkvi-ids (via hanzipy) · Kangxi 214-radical dictionary · Runs 100% offline.")
