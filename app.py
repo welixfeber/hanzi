@@ -1,23 +1,60 @@
 """
 ========================================================================
- Hanzi Explorer — character-decomposition learning app
- Single-file Streamlit app.  Deploy free on Streamlit Cloud / HF Spaces.
-
- Files needed in your repo:
-   app.py            <- this file
-   requirements.txt  <- contains:  streamlit
-                                    hanzipy
+ Hanzi Explorer 2.0 — character-decomposition learning app
+ Single-file Streamlit app. Deploy free on Streamlit Cloud / HF Spaces.
+ requirements.txt:  streamlit
+                    hanzipy
 ========================================================================
 """
+import re
 import streamlit as st
-
-# hanzipy is pure-python + bundles CC-CEDICT & cjkvi-ids data, so it
-# works on any free host with no external API / internet needed.
 from hanzipy.dictionary import HanziDictionary
 from hanzipy.decomposer import HanziDecomposer
 
 # ----------------------------------------------------------------------
-# 214 KANGXI RADICAL DICTIONARY  (canonical meaning + pinyin + variants)
+# PINYIN TONE-MARK CONVERSION  ("jian4" -> "jiàn")
+# ----------------------------------------------------------------------
+TONE_MARKS = {
+    'a':'āáǎàa','e':'ēéěèe','i':'īíǐìi',
+    'o':'ōóǒòo','u':'ūúǔùu','v':'ǖǘǚǜü',
+}
+def _mark_syllable(syl):
+    syl = syl.strip()
+    if not syl:
+        return syl
+    tone = 5
+    if syl[-1].isdigit():
+        tone = int(syl[-1]); syl = syl[:-1]
+    if tone in (5, 0):
+        return syl.replace('v','ü').replace('V','Ü')
+    low = syl.lower(); idx = -1
+    if 'a' in low: idx = low.index('a')
+    elif 'e' in low: idx = low.index('e')
+    elif 'ou' in low: idx = low.index('o')
+    else:
+        for i in range(len(low)-1,-1,-1):
+            if low[i] in 'aeiouv': idx = i; break
+    if idx == -1:
+        return syl.replace('v','ü')
+    marked = TONE_MARKS[low[idx]][tone-1]
+    if syl[idx].isupper(): marked = marked.upper()
+    return (syl[:idx]+marked+syl[idx+1:]).replace('v','ü').replace('V','Ü')
+
+def prettify_pinyin(raw):
+    if not raw: return raw
+    return ' '.join(_mark_syllable(s) for s in raw.split(' '))
+
+def normalize_pinyin_query(q):
+    q = q.strip().lower()
+    q = re.sub(r'[0-5]','',q)
+    trans = {}
+    for base, marks in TONE_MARKS.items():
+        for m in marks: trans[m] = base
+    q = ''.join(trans.get(ch, ch) for ch in q)
+    return q.replace('ü','v').replace(' ','')
+
+# ----------------------------------------------------------------------
+# 214 KANGXI RADICAL DICTIONARY
 # ----------------------------------------------------------------------
 KANGXI = {
 1:("一","yī","one",[]),2:("丨","gǔn","line",[]),3:("丶","zhǔ","dot",[]),
@@ -93,16 +130,14 @@ KANGXI = {
 210:("齊","qí","even",["齐"]),211:("齒","chǐ","tooth",["齿"]),212:("龍","lóng","dragon",["龙"]),
 213:("龜","guī","turtle",["龟"]),214:("龠","yuè","flute",[]),
 }
-
 def _build_radical_lookup():
     lookup = {}
-    for num,(glyph,pinyin,meaning,variants) in KANGXI.items():
-        rec = {"radical_number":num,"canonical":glyph,"pinyin":pinyin,"meaning":meaning}
+    for num,(glyph,py,mean,variants) in KANGXI.items():
+        rec = {"radical_number":num,"canonical":glyph,"pinyin":py,"meaning":mean}
         lookup[glyph] = rec
         for v in variants:
             lookup[v] = {**rec,"variant_form":v}
     return lookup
-
 RADICAL_LOOKUP = _build_radical_lookup()
 
 # ----------------------------------------------------------------------
@@ -152,8 +187,7 @@ class ChineseCharacterEngine:
         for c in decomp.get("radical", []) or []:
             if c == ch or c in seen or not c.strip():
                 continue
-            seen.add(c)
-            out.append(self._component_info(c))
+            seen.add(c); out.append(self._component_info(c))
         return out
 
     def _examples(self, ch, limit=6):
@@ -164,12 +198,10 @@ class ChineseCharacterEngine:
         words = []
         for tier in ("high_frequency","mid_frequency","low_frequency"):
             for w in ex.get(tier, []):
-                if w.get("simplified") == ch:
-                    continue
+                if w.get("simplified") == ch: continue
                 words.append({"word":w.get("simplified",""),"pinyin":w.get("pinyin",""),
                               "meaning":w.get("definition",""),"frequency":tier.replace("_frequency","")})
-                if len(words) >= limit:
-                    return words
+                if len(words) >= limit: return words
         return words
 
     def explain_character(self, ch):
@@ -184,58 +216,154 @@ class ChineseCharacterEngine:
             words = list(phrase)
         word_objs = []
         for w in words:
-            if not any(self._is_chinese(c) for c in w):
-                continue
+            if not any(self._is_chinese(c) for c in w): continue
             word_objs.append({"word":w,"readings":self._lookup(w),
                               "characters":[self.explain_character(c) for c in w if self._is_chinese(c)]})
         return {"input":phrase,"language":"zh","words":word_objs}
 
+    def build_pinyin_index(self):
+        index = {}
+        for char, entries in self._dict.dictionary_simplified.items():
+            if len(char) != 1: continue
+            for e in entries:
+                raw = e.get("pinyin","")
+                for syl in raw.split(' '):
+                    key = normalize_pinyin_query(syl)
+                    if not key: continue
+                    try:
+                        rank = int(self._dict.get_character_frequency(char).get("number",99999))
+                    except Exception:
+                        rank = 99999
+                    index.setdefault(key,[]).append(
+                        {"char":char,"pinyin_raw":raw,"meaning":e.get("definition",""),"rank":rank})
+        for key,lst in index.items():
+            seen,uniq = set(),[]
+            for item in sorted(lst,key=lambda x:x["rank"]):
+                if item["char"] in seen: continue
+                seen.add(item["char"]); uniq.append(item)
+            index[key] = uniq
+        return index
+
 # ----------------------------------------------------------------------
-# STREAMLIT UI
+# STREAMLIT UI  (modern dark theme)
 # ----------------------------------------------------------------------
+st.set_page_config(page_title="Hanzi Explorer", page_icon="🀄", layout="centered")
+
 @st.cache_resource
 def get_engine():
-    return ChineseCharacterEngine(RADICAL_LOOKUP)
+    eng = ChineseCharacterEngine(RADICAL_LOOKUP)
+    return eng, eng.build_pinyin_index()
 
-st.set_page_config(page_title="Hanzi Explorer", page_icon="🀄", layout="centered")
-st.title("🀄 Hanzi Explorer")
-st.caption("Paste a Chinese word or phrase → see every character broken into its building blocks.")
+engine, PINYIN_INDEX = get_engine()
 
-engine = get_engine()
+# ---- custom CSS for a modern look ----
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Serif+SC:wght@700&display=swap');
+.stApp {
+  background: radial-gradient(1200px 600px at 20% -10%, #1e2a4a 0%, #0b1020 45%, #070a16 100%);
+  color: #e7ecf5; font-family: 'Inter', sans-serif;
+}
+.big-title {
+  font-size: 2.6rem; font-weight: 800; letter-spacing:-1px;
+  background: linear-gradient(90deg,#7cc4ff,#b99cff 60%,#ff9ecb);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:0;
+}
+.subtitle { color:#9fb0cc; margin-top:0; font-size:1rem; }
+.card {
+  background: rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
+  border-radius:18px; padding:20px 22px; margin:14px 0;
+  backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+}
+.hz {
+  font-family:'Noto Serif SC',serif; font-size:3.4rem; line-height:1;
+  color:#fff; text-shadow:0 2px 20px rgba(124,196,255,0.4);
+}
+.pinyin { font-size:1.4rem; color:#7cc4ff; font-weight:600; }
+.meaning { color:#cdd7ea; font-size:1.02rem; }
+.chip {
+  display:inline-block; padding:6px 12px; margin:4px 6px 4px 0; border-radius:999px;
+  background:rgba(124,196,255,0.12); border:1px solid rgba(124,196,255,0.3);
+  font-size:0.92rem; color:#dbe7ff;
+}
+.chip .cpy { color:#8fa6c9; font-size:0.82rem; }
+.chip.var { background:rgba(255,158,203,0.12); border-color:rgba(255,158,203,0.35); }
+.label { text-transform:uppercase; letter-spacing:1.5px; font-size:0.72rem;
+         color:#7f90b0; margin:14px 0 6px; font-weight:600; }
+.ex { display:flex; justify-content:space-between; padding:8px 12px; margin:5px 0;
+      background:rgba(255,255,255,0.03); border-radius:10px; border-left:3px solid #7cc4ff; }
+.ex b { color:#fff; font-size:1.1rem; } .ex .epy{ color:#7cc4ff; }
+.ex .em { color:#9fb0cc; font-size:0.9rem; max-width:60%; text-align:right; }
+.stTextInput input, .stTextArea textarea {
+  background:rgba(255,255,255,0.06)!important; color:#fff!important;
+  border:1px solid rgba(255,255,255,0.15)!important; border-radius:12px!important; }
+div[data-baseweb="tab-list"]{ gap:8px; }
+button[data-baseweb="tab"]{ background:rgba(255,255,255,0.05); border-radius:10px 10px 0 0; }
+</style>
+""", unsafe_allow_html=True)
 
-phrase = st.text_input("Enter Chinese text", value="电影院",
-                       placeholder="e.g. 电影院, 医院, 我想去中国")
+st.markdown('<p class="big-title">🀄 Hanzi Explorer</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Break any Chinese word into its building blocks — or type pinyin to find the character you need.</p>', unsafe_allow_html=True)
 
-if phrase.strip():
-    result = engine.explain_phrase(phrase)
-    if not result["words"]:
-        st.warning("No Chinese characters found. Try pasting some 汉字.")
-    for w in result["words"]:
-        word_reading = w["readings"][0] if w["readings"] else None
-        header = f"### {w['word']}"
-        if word_reading:
-            header += f"  —  *{word_reading['pinyin']}*"
-        st.markdown(header)
-        if word_reading:
-            st.markdown(f"**Meaning:** {word_reading['meaning']}")
+def render_character(c):
+    rd = c["readings"][0] if c["readings"] else {"pinyin":"","meaning":"?"}
+    py = prettify_pinyin(rd["pinyin"])
+    html = f'<div class="card"><span class="hz">{c["character"]}</span> '
+    html += f'<span class="pinyin">{py}</span><br>'
+    html += f'<span class="meaning">{rd["meaning"]}</span>'
+    if c["components"]:
+        html += '<div class="label">Building blocks</div>'
+        for comp in c["components"]:
+            cls = "chip var" if comp.get("note") else "chip"
+            note = f" · {comp['note']}" if comp.get("note") else ""
+            cpy = prettify_pinyin(comp["pinyin"])
+            html += (f'<span class="{cls}">{comp["component"]} '
+                     f'<span class="cpy">{cpy}</span> — {comp["meaning"]}{note}</span>')
+    if c["appears_in"]:
+        html += '<div class="label">Also appears in</div>'
+        for ex in c["appears_in"]:
+            html += (f'<div class="ex"><span><b>{ex["word"]}</b> '
+                     f'<span class="epy">{prettify_pinyin(ex["pinyin"])}</span></span>'
+                     f'<span class="em">{ex["meaning"][:70]}</span></div>')
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
 
-        for c in w["characters"]:
-            rd = c["readings"][0] if c["readings"] else {"pinyin":"?","meaning":"?"}
-            with st.expander(f"🔹 {c['character']}  [{rd['pinyin']}]  —  {rd['meaning'][:40]}", expanded=True):
-                st.markdown(f"**{c['character']}** · *{rd['pinyin']}* — {rd['meaning']}")
+tab1, tab2 = st.tabs(["✍️ Explore text", "🔤 Pinyin → character"])
 
-                if c["components"]:
-                    st.markdown("**Building blocks (components):**")
-                    for comp in c["components"]:
-                        note = f"  · _{comp['note']}_" if comp.get("note") else ""
-                        tag = "🟢" if comp["source"] == "kangxi" else "⚪"
-                        st.markdown(f"- {tag} **{comp['component']}** "
-                                    f"({comp['pinyin']}) = {comp['meaning']}{note}")
+with tab1:
+    phrase = st.text_input("Enter Chinese text", value="电影院",
+                           placeholder="e.g. 电影院, 医院, 我想去中国", key="phrase_in")
+    if phrase.strip():
+        result = engine.explain_phrase(phrase)
+        if not result["words"]:
+            st.warning("No Chinese characters found — try pasting some 汉字.")
+        for w in result["words"]:
+            wr = w["readings"][0] if w["readings"] else None
+            title = f'### {w["word"]}'
+            if wr: title += f'  ·  {prettify_pinyin(wr["pinyin"])}'
+            st.markdown(title)
+            if wr: st.markdown(f'<span class="meaning">{wr["meaning"]}</span>', unsafe_allow_html=True)
+            for c in w["characters"]:
+                render_character(c)
 
-                if c["appears_in"]:
-                    st.markdown("**Also appears in:**")
-                    for ex in c["appears_in"]:
-                        st.markdown(f"- **{ex['word']}** ({ex['pinyin']}) — {ex['meaning'][:60]}")
-        st.divider()
+with tab2:
+    q = st.text_input("Type pinyin (with or without tone number)", value="jian",
+                      placeholder="e.g. jian, hao3, shui", key="pinyin_in")
+    if q.strip():
+        hits = PINYIN_INDEX.get(normalize_pinyin_query(q), [])
+        if not hits:
+            st.warning("No characters found for that pinyin. Try another syllable.")
+        else:
+            st.markdown(f'<div class="label">{len(hits)} match(es) — most common first. Click one to explore.</div>',
+                        unsafe_allow_html=True)
+            cols = st.columns(5)
+            for i, h in enumerate(hits[:20]):
+                label = f'{h["char"]}\n{prettify_pinyin(h["pinyin_raw"])}'
+                if cols[i % 5].button(label, key=f"pick_{i}", use_container_width=True):
+                    st.session_state["chosen_char"] = h["char"]
+            chosen = st.session_state.get("chosen_char")
+            if chosen:
+                st.markdown(f'<div class="label">Selected character</div>', unsafe_allow_html=True)
+                render_character(engine.explain_character(chosen))
 
-st.caption("Data: CC-CEDICT + cjkvi-ids (via hanzipy) · Kangxi 214-radical dictionary. Runs 100% offline.")
+st.caption("Data: CC-CEDICT + cjkvi-ids (via hanzipy) · Kangxi 214-radical dictionary · Runs 100% offline.")
