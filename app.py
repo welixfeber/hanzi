@@ -1,15 +1,22 @@
 """
 ========================================================================
- Hanzi Explorer 3.0 — character-decomposition learning app
+ Hanzi Explorer 4.0 — Chinese character decomposition + Korean Hanja
  Single-file Streamlit app. Deploy free on Streamlit Cloud / HF Spaces.
- requirements.txt:  streamlit
-                    hanzipy
+ requirements.txt:
+     streamlit
+     hanzipy
+     hanja
+     opencc-python-reimplemented
+     easyocr
+     pillow
 ========================================================================
 """
 import re
 import streamlit as st
 from hanzipy.dictionary import HanziDictionary
 from hanzipy.decomposer import HanziDecomposer
+import hanja
+from opencc import OpenCC
 
 # ----------------------------------------------------------------------
 # PINYIN TONE-MARK CONVERSION  ("jian4" -> "jiàn")
@@ -130,13 +137,36 @@ def _build_radical_lookup():
 RADICAL_LOOKUP = _build_radical_lookup()
 
 # ----------------------------------------------------------------------
+# KOREAN HANJA READING LAYER  (simplified -> traditional -> Hangul)
+# ----------------------------------------------------------------------
+class KoreanHanja:
+    def __init__(self):
+        self._cc = OpenCC('s2t')          # simplified -> traditional
+        self._cache = {}
+    def char_reading(self, simplified_char):
+        if simplified_char in self._cache:
+            return self._cache[simplified_char]
+        try:
+            trad = self._cc.convert(simplified_char)
+            hangul = hanja.translate(trad, 'substitution')
+            # if hanja couldn't map it, translate returns the original char
+            reading = hangul if hangul and hangul != trad else ""
+        except Exception:
+            reading = ""
+        self._cache[simplified_char] = reading
+        return reading
+    def word_reading(self, simplified_word):
+        return "".join(self.char_reading(c) or "·" for c in simplified_word)
+
+# ----------------------------------------------------------------------
 # ENGINE
 # ----------------------------------------------------------------------
 class ChineseCharacterEngine:
-    def __init__(self, radical_lookup):
+    def __init__(self, radical_lookup, korean):
         self._dict = HanziDictionary()
         self._decomposer = HanziDecomposer()
         self._radicals = radical_lookup
+        self._korean = korean
         self._comp_cache = {}
 
     def _is_chinese(self, ch):
@@ -178,14 +208,18 @@ class ChineseCharacterEngine:
         words = []
         for tier in ("high_frequency","mid_frequency","low_frequency"):
             for w in ex.get(tier, []):
-                if w.get("simplified") == ch: continue
-                words.append({"word":w.get("simplified",""),"pinyin":w.get("pinyin",""),
-                              "meaning":w.get("definition",""),"frequency":tier.replace("_frequency","")})
+                word = w.get("simplified","")
+                if word == ch: continue
+                words.append({"word":word,"pinyin":w.get("pinyin",""),
+                              "meaning":w.get("definition",""),
+                              "hanja":self._korean.word_reading(word),
+                              "frequency":tier.replace("_frequency","")})
                 if len(words) >= limit: return words
         return words
 
     def explain_character(self, ch):
         return {"character":ch,"readings":self._lookup(ch),
+                "hanja":self._korean.char_reading(ch),
                 "components":self._components(ch),"appears_in":self._examples(ch)}
 
     def explain_phrase(self, phrase):
@@ -196,6 +230,7 @@ class ChineseCharacterEngine:
         for w in words:
             if not any(self._is_chinese(c) for c in w): continue
             word_objs.append({"word":w,"readings":self._lookup(w),
+                              "hanja":self._korean.word_reading(w),
                               "characters":[self.explain_character(c) for c in w if self._is_chinese(c)]})
         return {"input":phrase,"language":"zh","words":word_objs}
 
@@ -221,7 +256,6 @@ class ChineseCharacterEngine:
             index[key] = uniq
         return index, valid
 
-# multi-syllable pinyin segmentation
 def segment_pinyin(text, valid):
     text = normalize_pinyin_query(text)
     result, i = [], 0
@@ -230,7 +264,7 @@ def segment_pinyin(text, valid):
         for L in range(6,0,-1):
             chunk = text[i:i+L]
             if chunk in valid:
-                result.append(chunk); i += L; matched = True; break
+                result.append(chunk); i += L; matched=True; break
         if not matched:
             result.append(text[i]); i += 1
     return result
@@ -242,74 +276,80 @@ st.set_page_config(page_title="Hanzi Explorer", page_icon="🀄", layout="center
 
 @st.cache_resource
 def get_engine():
-    eng = ChineseCharacterEngine(RADICAL_LOOKUP)
+    korean = KoreanHanja()
+    eng = ChineseCharacterEngine(RADICAL_LOOKUP, korean)
     idx, valid = eng.build_pinyin_index()
     return eng, idx, valid
 
+@st.cache_resource
+def get_ocr_reader():
+    import easyocr
+    return easyocr.Reader(['ch_sim'], gpu=False)
+
 engine, PINYIN_INDEX, VALID_SYL = get_engine()
 
-# ---- theme toggle (light default) ----
-if "dark" not in st.session_state:
-    st.session_state["dark"] = False
-
+if "dark" not in st.session_state: st.session_state["dark"] = False
 top = st.columns([6,2])
 with top[1]:
     st.session_state["dark"] = st.toggle("🌙 Dark mode", value=st.session_state["dark"])
-
 DARK = st.session_state["dark"]
 
 if DARK:
-    THEME = dict(
-        bg="radial-gradient(1200px 600px at 20% -10%, #1e2a4a 0%, #0b1020 45%, #070a16 100%)",
-        text="#e7ecf5", sub="#9fb0cc", card="rgba(255,255,255,0.04)",
-        border="rgba(255,255,255,0.08)", hz="#ffffff", accent="#7cc4ff",
-        chipbg="rgba(124,196,255,0.12)", chipbd="rgba(124,196,255,0.30)", chiptx="#dbe7ff",
-        varbg="rgba(255,158,203,0.12)", varbd="rgba(255,158,203,0.35)",
-        exbg="rgba(255,255,255,0.03)", label="#7f90b0", meaning="#cdd7ea", inputbg="rgba(255,255,255,0.06)")
+    T = dict(bg="radial-gradient(1200px 600px at 20% -10%,#1e2a4a 0%,#0b1020 45%,#070a16 100%)",
+        text="#e7ecf5",sub="#9fb0cc",card="rgba(255,255,255,0.04)",border="rgba(255,255,255,0.08)",
+        hz="#fff",accent="#7cc4ff",chipbg="rgba(124,196,255,0.12)",chipbd="rgba(124,196,255,0.30)",
+        chiptx="#dbe7ff",varbg="rgba(255,158,203,0.12)",varbd="rgba(255,158,203,0.35)",
+        label="#7f90b0",meaning="#cdd7ea",inputbg="rgba(255,255,255,0.06)",
+        kobg="rgba(120,220,170,0.12)",kobd="rgba(120,220,170,0.4)",kotx="#b8f0d4")
 else:
-    THEME = dict(
-        bg="radial-gradient(1200px 600px at 20% -10%, #eaf1ff 0%, #f7f9fc 45%, #ffffff 100%)",
-        text="#1a2338", sub="#5c6b86", card="rgba(255,255,255,0.85)",
-        border="rgba(20,40,80,0.10)", hz="#141c30", accent="#2b6fff",
-        chipbg="rgba(43,111,255,0.08)", chipbd="rgba(43,111,255,0.25)", chiptx="#243b6b",
-        varbg="rgba(214,51,132,0.08)", varbd="rgba(214,51,132,0.28)",
-        exbg="rgba(20,40,80,0.03)", label="#7484a3", meaning="#33415c", inputbg="rgba(255,255,255,0.9)")
+    T = dict(bg="radial-gradient(1200px 600px at 20% -10%,#eaf1ff 0%,#f7f9fc 45%,#fff 100%)",
+        text="#1a2338",sub="#5c6b86",card="rgba(255,255,255,0.85)",border="rgba(20,40,80,0.10)",
+        hz="#141c30",accent="#2b6fff",chipbg="rgba(43,111,255,0.08)",chipbd="rgba(43,111,255,0.25)",
+        chiptx="#243b6b",varbg="rgba(214,51,132,0.08)",varbd="rgba(214,51,132,0.28)",
+        label="#7484a3",meaning="#33415c",inputbg="rgba(255,255,255,0.9)",
+        kobg="rgba(16,160,110,0.08)",kobd="rgba(16,160,110,0.3)",kotx="#0c7a53")
 
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Serif+SC:wght@700&display=swap');
-.stApp {{ background:{THEME['bg']}; color:{THEME['text']}; font-family:'Inter',sans-serif; }}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Serif+SC:wght@700&family=Noto+Serif+KR:wght@700&display=swap');
+.stApp {{ background:{T['bg']}; color:{T['text']}; font-family:'Inter',sans-serif; }}
 .big-title {{ font-size:2.6rem; font-weight:800; letter-spacing:-1px;
   background:linear-gradient(90deg,#2b6fff,#7c4dff 55%,#ff5fa2);
   -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:0; }}
-.subtitle {{ color:{THEME['sub']}; margin-top:2px; font-size:1rem; }}
-.card {{ background:{THEME['card']}; border:1px solid {THEME['border']}; border-radius:18px;
+.subtitle {{ color:{T['sub']}; margin-top:2px; font-size:1rem; }}
+.card {{ background:{T['card']}; border:1px solid {T['border']}; border-radius:18px;
   padding:20px 22px; margin:14px 0; backdrop-filter:blur(10px);
   box-shadow:0 8px 30px rgba(20,40,80,0.10); }}
-.hz {{ font-family:'Noto Serif SC',serif; font-size:3.4rem; line-height:1; color:{THEME['hz']}; }}
-.pinyin {{ font-size:1.4rem; color:{THEME['accent']}; font-weight:600; }}
-.meaning {{ color:{THEME['meaning']}; font-size:1.02rem; }}
+.hz {{ font-family:'Noto Serif SC',serif; font-size:3.4rem; line-height:1; color:{T['hz']}; }}
+.pinyin {{ font-size:1.4rem; color:{T['accent']}; font-weight:600; }}
+.ko {{ font-family:'Noto Serif KR',serif; display:inline-block; padding:4px 12px; margin-left:8px;
+  border-radius:999px; background:{T['kobg']}; border:1px solid {T['kobd']}; color:{T['kotx']};
+  font-size:1.15rem; font-weight:700; vertical-align:middle; }}
+.meaning {{ color:{T['meaning']}; font-size:1.02rem; }}
 .chip {{ display:inline-block; padding:6px 12px; margin:4px 6px 4px 0; border-radius:999px;
-  background:{THEME['chipbg']}; border:1px solid {THEME['chipbd']}; font-size:0.92rem; color:{THEME['chiptx']}; }}
+  background:{T['chipbg']}; border:1px solid {T['chipbd']}; font-size:0.92rem; color:{T['chiptx']}; }}
 .chip .cpy {{ opacity:0.7; font-size:0.82rem; }}
-.chip.var {{ background:{THEME['varbg']}; border-color:{THEME['varbd']}; }}
-.label {{ text-transform:uppercase; letter-spacing:1.5px; font-size:0.72rem; color:{THEME['label']};
+.chip.var {{ background:{T['varbg']}; border-color:{T['varbd']}; }}
+.label {{ text-transform:uppercase; letter-spacing:1.5px; font-size:0.72rem; color:{T['label']};
   margin:14px 0 6px; font-weight:700; }}
-.stTextInput input {{ background:{THEME['inputbg']}!important; color:{THEME['text']}!important;
-  border:1px solid {THEME['border']}!important; border-radius:12px!important; }}
+.stTextInput input {{ background:{T['inputbg']}!important; color:{T['text']}!important;
+  border:1px solid {T['border']}!important; border-radius:12px!important; }}
 div[data-baseweb="tab-list"]{{ gap:8px; }}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="big-title">🀄 Hanzi Explorer</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Break any Chinese word into its building blocks — or type pinyin to find characters.</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Chinese words → meaning, building blocks, examples & Korean Hanja readings.</p>', unsafe_allow_html=True)
 
-# ---- render a character card; example words become clickable drill-down buttons ----
+def ko_badge(hanja_str):
+    return f'<span class="ko">🇰🇷 {hanja_str}</span>' if hanja_str and hanja_str.strip("·") else ''
+
 def render_character(c, key_prefix):
     rd = c["readings"][0] if c["readings"] else {"pinyin":"","meaning":"?"}
     html = f'<div class="card"><span class="hz">{c["character"]}</span> '
-    html += f'<span class="pinyin">{prettify_pinyin(rd["pinyin"])}</span><br>'
-    html += f'<span class="meaning">{rd["meaning"]}</span>'
+    html += f'<span class="pinyin">{prettify_pinyin(rd["pinyin"])}</span>'
+    html += ko_badge(c.get("hanja",""))
+    html += f'<br><span class="meaning">{rd["meaning"]}</span>'
     if c["components"]:
         html += '<div class="label">Building blocks</div>'
         for comp in c["components"]:
@@ -319,54 +359,48 @@ def render_character(c, key_prefix):
                      f'<span class="cpy">{prettify_pinyin(comp["pinyin"])}</span> — {comp["meaning"]}{note}</span>')
     html += '</div>'
     st.markdown(html, unsafe_allow_html=True)
-    # clickable example words -> drill into that word
     if c["appears_in"]:
-        st.markdown('<div class="label">Also appears in — click to break it down</div>', unsafe_allow_html=True)
-        cols = st.columns(3)
+        st.markdown('<div class="label">Also appears in — click to break it down (🇰🇷 = Hanja reading)</div>', unsafe_allow_html=True)
+        cols = st.columns(2)
         for i, ex in enumerate(c["appears_in"]):
-            lbl = f'{ex["word"]}  {prettify_pinyin(ex["pinyin"])}'
-            if cols[i % 3].button(lbl, key=f"{key_prefix}_ex_{i}", use_container_width=True):
+            ko = f'  🇰🇷{ex["hanja"]}' if ex.get("hanja","").strip("·") else ''
+            lbl = f'{ex["word"]}  {prettify_pinyin(ex["pinyin"])}{ko}'
+            if cols[i % 2].button(lbl, key=f"{key_prefix}_ex_{i}", use_container_width=True):
                 st.session_state["drill_word"] = ex["word"]
 
-def render_word_breakdown(word, key_prefix):
-    """Explain a full word and each of its characters."""
-    obj = engine.explain_phrase(word)
-    for w in obj["words"]:
-        wr = w["readings"][0] if w["readings"] else None
-        title = f'### {w["word"]}'
-        if wr: title += f'  ·  {prettify_pinyin(wr["pinyin"])}'
-        st.markdown(title)
-        if wr: st.markdown(f'<span class="meaning">{wr["meaning"]}</span>', unsafe_allow_html=True)
+def render_word_header(w):
+    wr = w["readings"][0] if w["readings"] else None
+    title = f'### {w["word"]}'
+    if wr: title += f'  ·  {prettify_pinyin(wr["pinyin"])}'
+    st.markdown(title)
+    bits = ""
+    if w.get("hanja","").strip("·"): bits += ko_badge(w["hanja"])
+    if wr: bits += f'<span class="meaning"> &nbsp; {wr["meaning"]}</span>'
+    if bits: st.markdown(bits, unsafe_allow_html=True)
+
+def render_full(phrase, key_prefix):
+    result = engine.explain_phrase(phrase)
+    if not result["words"]:
+        st.warning("No Chinese characters found."); return
+    for w in result["words"]:
+        render_word_header(w)
         for j, c in enumerate(w["characters"]):
             render_character(c, key_prefix=f"{key_prefix}_{w['word']}_{j}")
 
-tab1, tab2 = st.tabs(["✍️ Explore text", "🔤 Pinyin → characters"])
+tab1, tab2, tab3 = st.tabs(["🀄 Chinese text", "🔤 Pinyin", "📷 Photo"])
 
 with tab1:
-    phrase = st.text_input("Enter Chinese text", value="洗手间",
-                           placeholder="e.g. 洗手间, 电影院, 我想去中国", key="phrase_in")
+    phrase = st.text_input("Enter Chinese characters", value="洗手间",
+                           placeholder="e.g. 洗手间, 行动, 电影院", key="phrase_in")
     if phrase.strip():
-        result = engine.explain_phrase(phrase)
-        if not result["words"]:
-            st.warning("No Chinese characters found — try pasting some 汉字.")
-        for w in result["words"]:
-            wr = w["readings"][0] if w["readings"] else None
-            title = f'### {w["word"]}'
-            if wr: title += f'  ·  {prettify_pinyin(wr["pinyin"])}'
-            st.markdown(title)
-            if wr: st.markdown(f'<span class="meaning">{wr["meaning"]}</span>', unsafe_allow_html=True)
-            for j, c in enumerate(w["characters"]):
-                render_character(c, key_prefix=f"t1_{w['word']}_{j}")
+        render_full(phrase, "t1")
 
 with tab2:
-    q = st.text_input("Type pinyin — one or many syllables together",
-                      value="xishoujian",
-                      placeholder="e.g. xishoujian, zhongguo, hao, jian4", key="pinyin_in")
+    q = st.text_input("Type pinyin — one or many syllables together", value="xishoujian",
+                      placeholder="e.g. xishoujian, xingdong, hao", key="pinyin_in")
     if q.strip():
         syllables = segment_pinyin(q, VALID_SYL)
-        st.markdown(f'<div class="label">Detected syllables: {" · ".join(syllables)}</div>',
-                    unsafe_allow_html=True)
-        # For each syllable, let user pick which character they meant
+        st.markdown(f'<div class="label">Detected syllables: {" · ".join(syllables)}</div>', unsafe_allow_html=True)
         picked = st.session_state.setdefault("picked_chars", {})
         for si, syl in enumerate(syllables):
             hits = PINYIN_INDEX.get(syl, [])
@@ -378,24 +412,41 @@ with tab2:
                 lbl = f'{h["char"]}\n{prettify_pinyin(h["pinyin_raw"])}'
                 if cols[i % 6].button(lbl, key=f"pk_{si}_{i}", use_container_width=True):
                     picked[si] = h["char"]
-            # default to most common if none picked yet
             picked.setdefault(si, hits[0]["char"])
             st.markdown(f'<span class="pinyin">→ {picked[si]}</span>', unsafe_allow_html=True)
-
-        chosen_word = "".join(picked.get(i, "") for i in range(len(syllables)))
+        chosen_word = "".join(picked.get(i,"") for i in range(len(syllables)))
         if chosen_word:
             st.divider()
-            st.markdown(f'<div class="label">Breakdown of: {chosen_word}</div>', unsafe_allow_html=True)
-            for j, ch in enumerate(chosen_word):
-                render_character(engine.explain_character(ch), key_prefix=f"t2_{j}")
+            render_full(chosen_word, "t2")
 
-# ---- drill-down panel (triggered by clicking an example word anywhere) ----
+with tab3:
+    st.markdown('<div class="label">Snap a photo of Chinese text, then it will be recognized.</div>', unsafe_allow_html=True)
+    img = st.camera_input("Take a picture")
+    up = st.file_uploader("…or upload an image", type=["png","jpg","jpeg"])
+    source = img or up
+    if source is not None:
+        with st.spinner("Recognizing characters… (first run downloads the OCR model — please wait)"):
+            import numpy as np
+            from PIL import Image
+            pil = Image.open(source).convert("RGB")
+            reader = get_ocr_reader()
+            results = reader.readtext(np.array(pil), detail=0)
+        recognized = "".join(results)
+        recognized = "".join(ch for ch in recognized if engine._is_chinese(ch))
+        if recognized:
+            st.success(f"Recognized: {recognized}")
+            edited = st.text_input("Fix if needed, then it explains below:", value=recognized, key="ocr_edit")
+            if edited.strip():
+                render_full(edited, "t3")
+        else:
+            st.warning("No Chinese characters detected. Try a clearer, closer photo.")
+
 if st.session_state.get("drill_word"):
     dw = st.session_state["drill_word"]
     st.divider()
     st.markdown(f'<div class="label">🔎 Drilled into: {dw}</div>', unsafe_allow_html=True)
-    render_word_breakdown(dw, key_prefix="drill")
+    render_full(dw, "drill")
     if st.button("✖ Close drill-down"):
         st.session_state["drill_word"] = None
 
-st.caption("Data: CC-CEDICT + cjkvi-ids (via hanzipy) · Kangxi 214-radical dictionary · Runs 100% offline.")
+st.caption("Data: CC-CEDICT + cjkvi-ids (hanzipy) · Kangxi radicals · Korean Hanja via hanja+opencc · OCR via easyocr · 100% offline.")
