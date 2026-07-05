@@ -1,6 +1,6 @@
 """
 ========================================================================
- Hanzi Explorer 4.1 — Chinese character decomposition + Korean Hanja
+ Hanzi Explorer 4.0 — Chinese character decomposition + Korean Hanja
  Single-file Streamlit app. Deploy free on Streamlit Cloud / HF Spaces.
  requirements.txt:
      streamlit
@@ -9,7 +9,6 @@
      opencc-python-reimplemented
      easyocr
      pillow
-     numpy
 ========================================================================
 """
 import re
@@ -142,21 +141,22 @@ RADICAL_LOOKUP = _build_radical_lookup()
 # ----------------------------------------------------------------------
 class KoreanHanja:
     def __init__(self):
-        self._cc = OpenCC('s2t')
+        self._cc = OpenCC('s2t')          # simplified -> traditional
         self._cache = {}
-    def char_reading(self, ch):
-        if ch in self._cache: return self._cache[ch]
+    def char_reading(self, simplified_char):
+        if simplified_char in self._cache:
+            return self._cache[simplified_char]
         try:
-            trad = self._cc.convert(ch)
+            trad = self._cc.convert(simplified_char)
             hangul = hanja.translate(trad, 'substitution')
+            # if hanja couldn't map it, translate returns the original char
             reading = hangul if hangul and hangul != trad else ""
         except Exception:
             reading = ""
-        self._cache[ch] = reading
+        self._cache[simplified_char] = reading
         return reading
-    def word_reading(self, word):
-        parts = [self.char_reading(c) for c in word]
-        return "".join(p for p in parts if p)
+    def word_reading(self, simplified_word):
+        return "".join(self.char_reading(c) or "·" for c in simplified_word)
 
 # ----------------------------------------------------------------------
 # ENGINE
@@ -168,13 +168,16 @@ class ChineseCharacterEngine:
         self._radicals = radical_lookup
         self._korean = korean
         self._comp_cache = {}
+
     def _is_chinese(self, ch):
         cp = ord(ch)
         return 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF
+
     def _lookup(self, item):
         try: entries = self._dict.definition_lookup(item)
         except Exception: return []
         return [{"pinyin":e.get("pinyin",""),"meaning":e.get("definition","")} for e in entries]
+
     def _component_info(self, comp):
         if comp in self._comp_cache: return self._comp_cache[comp]
         rad = self._radicals.get(comp)
@@ -189,6 +192,7 @@ class ChineseCharacterEngine:
                     {"component":comp,"meaning":"(structural component)","pinyin":"","source":"unknown"})
         self._comp_cache[comp] = info
         return info
+
     def _components(self, ch):
         try: decomp = self._decomposer.decompose(ch)
         except Exception: return []
@@ -197,6 +201,7 @@ class ChineseCharacterEngine:
             if c == ch or c in seen or not c.strip(): continue
             seen.add(c); out.append(self._component_info(c))
         return out
+
     def _examples(self, ch, limit=6):
         try: ex = self._dict.get_examples(ch)
         except Exception: return []
@@ -207,13 +212,16 @@ class ChineseCharacterEngine:
                 if word == ch: continue
                 words.append({"word":word,"pinyin":w.get("pinyin",""),
                               "meaning":w.get("definition",""),
-                              "hanja":self._korean.word_reading(word)})
+                              "hanja":self._korean.word_reading(word),
+                              "frequency":tier.replace("_frequency","")})
                 if len(words) >= limit: return words
         return words
+
     def explain_character(self, ch):
         return {"character":ch,"readings":self._lookup(ch),
                 "hanja":self._korean.char_reading(ch),
                 "components":self._components(ch),"appears_in":self._examples(ch)}
+
     def explain_phrase(self, phrase):
         self._comp_cache = {}
         try: words = self._dict.segment(phrase)
@@ -225,6 +233,7 @@ class ChineseCharacterEngine:
                               "hanja":self._korean.word_reading(w),
                               "characters":[self.explain_character(c) for c in w if self._is_chinese(c)]})
         return {"input":phrase,"language":"zh","words":word_objs}
+
     def build_pinyin_index(self):
         index, valid = {}, set()
         for char, entries in self._dict.dictionary_simplified.items():
@@ -287,22 +296,18 @@ DARK = st.session_state["dark"]
 
 if DARK:
     T = dict(bg="radial-gradient(1200px 600px at 20% -10%,#1e2a4a 0%,#0b1020 45%,#070a16 100%)",
-        text="#e7ecf5",sub="#9fb0cc",card="rgba(255,255,255,0.05)",border="rgba(255,255,255,0.10)",
-        hz="#ffffff",accent="#7cc4ff",chipbg="rgba(124,196,255,0.14)",chipbd="rgba(124,196,255,0.35)",
-        chiptx="#e4eefb",varbg="rgba(255,158,203,0.16)",varbd="rgba(255,158,203,0.40)",vartx="#ffd9ea",
-        label="#a7b6d4",meaning="#e0e7f3",inputbg="rgba(255,255,255,0.08)",
-        kobg="rgba(120,220,170,0.16)",kobd="rgba(120,220,170,0.45)",kotx="#c7f5dd",
-        btnbg="rgba(255,255,255,0.08)",btnbd="rgba(255,255,255,0.20)",btntx="#eef3fb",
-        btnhover="rgba(124,196,255,0.22)")
+        text="#e7ecf5",sub="#9fb0cc",card="rgba(255,255,255,0.04)",border="rgba(255,255,255,0.08)",
+        hz="#fff",accent="#7cc4ff",chipbg="rgba(124,196,255,0.12)",chipbd="rgba(124,196,255,0.30)",
+        chiptx="#dbe7ff",varbg="rgba(255,158,203,0.12)",varbd="rgba(255,158,203,0.35)",
+        label="#7f90b0",meaning="#cdd7ea",inputbg="rgba(255,255,255,0.06)",
+        kobg="rgba(120,220,170,0.12)",kobd="rgba(120,220,170,0.4)",kotx="#b8f0d4")
 else:
-    T = dict(bg="radial-gradient(1200px 600px at 20% -10%,#eaf1ff 0%,#f7f9fc 45%,#ffffff 100%)",
-        text="#1a2338",sub="#4a5a78",card="#ffffff",border="rgba(20,40,80,0.12)",
-        hz="#141c30",accent="#2b6fff",chipbg="rgba(43,111,255,0.10)",chipbd="rgba(43,111,255,0.30)",
-        chiptx="#1c3a78",varbg="rgba(214,51,132,0.10)",varbd="rgba(214,51,132,0.32)",vartx="#9c2361",
-        label="#5a6b8c",meaning="#2b374d",inputbg="#ffffff",
-        kobg="rgba(16,160,110,0.12)",kobd="rgba(16,160,110,0.40)",kotx="#0a6e4a",
-        btnbg="#ffffff",btnbd="rgba(20,40,80,0.18)",btntx="#1a2338",
-        btnhover="rgba(43,111,255,0.10)")
+    T = dict(bg="radial-gradient(1200px 600px at 20% -10%,#eaf1ff 0%,#f7f9fc 45%,#fff 100%)",
+        text="#1a2338",sub="#5c6b86",card="rgba(255,255,255,0.85)",border="rgba(20,40,80,0.10)",
+        hz="#141c30",accent="#2b6fff",chipbg="rgba(43,111,255,0.08)",chipbd="rgba(43,111,255,0.25)",
+        chiptx="#243b6b",varbg="rgba(214,51,132,0.08)",varbd="rgba(214,51,132,0.28)",
+        label="#7484a3",meaning="#33415c",inputbg="rgba(255,255,255,0.9)",
+        kobg="rgba(16,160,110,0.08)",kobd="rgba(16,160,110,0.3)",kotx="#0c7a53")
 
 st.markdown(f"""
 <style>
@@ -313,54 +318,31 @@ st.markdown(f"""
   -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:0; }}
 .subtitle {{ color:{T['sub']}; margin-top:2px; font-size:1rem; }}
 .card {{ background:{T['card']}; border:1px solid {T['border']}; border-radius:18px;
-  padding:20px 22px; margin:14px 0; box-shadow:0 8px 30px rgba(20,40,80,0.10); }}
-.hz {{ font-family:'Noto Serif SC',serif; font-size:3.2rem; line-height:1; color:{T['hz']};
-  vertical-align:middle; }}
-.pinyin {{ font-size:1.35rem; color:{T['accent']}; font-weight:600; vertical-align:middle; }}
-.ko {{ font-family:'Noto Serif KR',serif; display:inline-block; padding:3px 12px; margin-left:8px;
+  padding:20px 22px; margin:14px 0; backdrop-filter:blur(10px);
+  box-shadow:0 8px 30px rgba(20,40,80,0.10); }}
+.hz {{ font-family:'Noto Serif SC',serif; font-size:3.4rem; line-height:1; color:{T['hz']}; }}
+.pinyin {{ font-size:1.4rem; color:{T['accent']}; font-weight:600; }}
+.ko {{ font-family:'Noto Serif KR',serif; display:inline-block; padding:4px 12px; margin-left:8px;
   border-radius:999px; background:{T['kobg']}; border:1px solid {T['kobd']}; color:{T['kotx']};
-  font-size:1.1rem; font-weight:700; vertical-align:middle; }}
+  font-size:1.15rem; font-weight:700; vertical-align:middle; }}
 .meaning {{ color:{T['meaning']}; font-size:1.02rem; }}
 .chip {{ display:inline-block; padding:6px 12px; margin:4px 6px 4px 0; border-radius:999px;
   background:{T['chipbg']}; border:1px solid {T['chipbd']}; font-size:0.92rem; color:{T['chiptx']}; }}
-.chip .cpy {{ opacity:0.75; font-size:0.82rem; }}
-.chip.var {{ background:{T['varbg']}; border-color:{T['varbd']}; color:{T['vartx']}; }}
-.label {{ text-transform:uppercase; letter-spacing:1.2px; font-size:0.74rem; color:{T['label']};
-  margin:16px 0 6px; font-weight:700; }}
-
-/* inputs */
+.chip .cpy {{ opacity:0.7; font-size:0.82rem; }}
+.chip.var {{ background:{T['varbg']}; border-color:{T['varbd']}; }}
+.label {{ text-transform:uppercase; letter-spacing:1.5px; font-size:0.72rem; color:{T['label']};
+  margin:14px 0 6px; font-weight:700; }}
 .stTextInput input {{ background:{T['inputbg']}!important; color:{T['text']}!important;
   border:1px solid {T['border']}!important; border-radius:12px!important; }}
-
-/* tabs */
-div[data-baseweb="tab-list"] {{ gap:8px; background:transparent; }}
-button[data-baseweb="tab"] {{ color:{T['sub']}!important; }}
-button[data-baseweb="tab"] p {{ color:{T['sub']}!important; font-weight:600!important; }}
-button[data-baseweb="tab"][aria-selected="true"] p {{ color:{T['accent']}!important; }}
-
-/* BUTTONS — the key fix: always readable in both themes */
-.stButton > button {{
-  background:{T['btnbg']}!important; color:{T['btntx']}!important;
-  border:1px solid {T['btnbd']}!important; border-radius:12px!important;
-  font-weight:600!important; white-space:pre-line!important; line-height:1.4!important;
-  padding:10px 12px!important; box-shadow:0 2px 8px rgba(20,40,80,0.06)!important;
-  transition:all .15s ease!important; min-height:52px!important;
-}}
-.stButton > button:hover {{
-  background:{T['btnhover']}!important; border-color:{T['accent']}!important;
-  color:{T['btntx']}!important; }}
-.stButton > button:disabled {{ color:{T['btntx']}!important; opacity:0.9!important; }}
-.stButton > button p, .stButton > button span, .stButton > button div,
-.stButton > button:hover p, .stButton > button:hover span {{
-  color:{T['btntx']}!important; }}
+div[data-baseweb="tab-list"]{{ gap:8px; }}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="big-title">🀄 Hanzi Explorer</p>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Chinese words → meaning, building blocks, examples & Korean Hanja readings.</p>', unsafe_allow_html=True)
 
-def ko_badge(h):
-    return f'<span class="ko">KR {h}</span>' if h and h.strip() else ''
+def ko_badge(hanja_str):
+    return f'<span class="ko">🇰🇷 {hanja_str}</span>' if hanja_str and hanja_str.strip("·") else ''
 
 def render_character(c, key_prefix):
     rd = c["readings"][0] if c["readings"] else {"pinyin":"","meaning":"?"}
@@ -378,11 +360,11 @@ def render_character(c, key_prefix):
     html += '</div>'
     st.markdown(html, unsafe_allow_html=True)
     if c["appears_in"]:
-        st.markdown('<div class="label">Also appears in — click to break it down (KR = Hanja reading)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="label">Also appears in — click to break it down (🇰🇷 = Hanja reading)</div>', unsafe_allow_html=True)
         cols = st.columns(2)
         for i, ex in enumerate(c["appears_in"]):
-            ko = f'   KR {ex["hanja"]}' if ex.get("hanja","").strip() else ''
-            lbl = f'{ex["word"]}  ·  {prettify_pinyin(ex["pinyin"])}{ko}'
+            ko = f'  🇰🇷{ex["hanja"]}' if ex.get("hanja","").strip("·") else ''
+            lbl = f'{ex["word"]}  {prettify_pinyin(ex["pinyin"])}{ko}'
             if cols[i % 2].button(lbl, key=f"{key_prefix}_ex_{i}", use_container_width=True):
                 st.session_state["drill_word"] = ex["word"]
 
@@ -392,7 +374,7 @@ def render_word_header(w):
     if wr: title += f'  ·  {prettify_pinyin(wr["pinyin"])}'
     st.markdown(title)
     bits = ""
-    if w.get("hanja","").strip(): bits += ko_badge(w["hanja"])
+    if w.get("hanja","").strip("·"): bits += ko_badge(w["hanja"])
     if wr: bits += f'<span class="meaning"> &nbsp; {wr["meaning"]}</span>'
     if bits: st.markdown(bits, unsafe_allow_html=True)
 
@@ -449,7 +431,8 @@ with tab3:
             pil = Image.open(source).convert("RGB")
             reader = get_ocr_reader()
             results = reader.readtext(np.array(pil), detail=0)
-        recognized = "".join(ch for ch in "".join(results) if engine._is_chinese(ch))
+        recognized = "".join(results)
+        recognized = "".join(ch for ch in recognized if engine._is_chinese(ch))
         if recognized:
             st.success(f"Recognized: {recognized}")
             edited = st.text_input("Fix if needed, then it explains below:", value=recognized, key="ocr_edit")
