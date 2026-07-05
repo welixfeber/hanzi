@@ -1,2 +1,7 @@
 streamlit
 hanzipy
+hanja
+opencc-python-reimplemented
+easyocr
+pillow
+numpy
